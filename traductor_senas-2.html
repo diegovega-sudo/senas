@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SignBridge — Traductor de Lenguaje de Señas</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tensorflow/4.10.0/tf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:ital,wght@0,300;0,400;0,500;1,300&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg:       #08090d;
+    --bg2:      #0f1117;
+    --panel:    #13151e;
+    --border:   #1e2233;
+    --accent:   #00e5ff;
+    --accent2:  #7c3aed;
+    --accent3:  #10b981;
+    --warn:     #f59e0b;
+    --text:     #e8eaf0;
+    --muted:    #5a607a;
+    --radius:   14px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'DM Sans', sans-serif;
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Animated background grid */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(0,229,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(0,229,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  /* Glow blobs */
+  .blob {
+    position: fixed;
+    border-radius: 50%;
+    filter: blur(120px);
+    opacity: 0.12;
+    pointer-events: none;
+    z-index: 0;
+    animation: blobFloat 8s ease-in-out infinite alternate;
+  }
+  .blob1 { width: 500px; height: 500px; background: var(--accent2); top: -100px; left: -150px; animation-delay: 0s; }
+  .blob2 { width: 400px; height: 400px; background: var(--accent); bottom: -100px; right: -100px; animation-delay: 3s; }
+  .blob3 { width: 300px; height: 300px; background: var(--accent3); top: 40%; left: 40%; animation-delay: 6s; }
+
+  @keyframes blobFloat {
+    from { transform: translate(0, 0) scale(1); }
+    to   { transform: translate(30px, 20px) scale(1.05); }
+  }
+
+  /* Layout */
+  .app { position: relative; z-index: 1; display: flex; flex-direction: column; min-height: 100vh; }
+
+  /* Header */
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 32px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(8,9,13,0.8);
+    backdrop-filter: blur(20px);
+    position: sticky; top: 0; z-index: 100;
+  }
+  .logo {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .logo-icon {
+    width: 38px; height: 38px;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+  }
+  .logo-text { font-family: 'Syne', sans-serif; font-weight: 800; font-size: 20px; letter-spacing: -0.5px; }
+  .logo-text span { color: var(--accent); }
+  .badge {
+    background: linear-gradient(135deg, rgba(0,229,255,0.15), rgba(124,58,237,0.15));
+    border: 1px solid rgba(0,229,255,0.3);
+    color: var(--accent);
+    font-size: 11px;
+    font-weight: 500;
+    padding: 4px 10px;
+    border-radius: 20px;
+    letter-spacing: 0.5px;
+  }
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--muted);
+    padding: 6px 14px;
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    background: var(--panel);
+  }
+  .status-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--muted);
+    transition: background 0.3s;
+  }
+  .status-dot.active { background: var(--accent3); box-shadow: 0 0 8px var(--accent3); animation: pulse 2s infinite; }
+  .status-dot.loading { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 0%,100%{opacity:1}50%{opacity:0.4} }
+  @keyframes glowPulse {
+    0%,100% { box-shadow: 0 8px 40px rgba(0,229,255,0.45); transform: scale(1); }
+    50%     { box-shadow: 0 8px 60px rgba(0,229,255,0.75); transform: scale(1.03); }
+  }
+  @keyframes camBounce {
+    0%,100% { transform: translateY(0); }
+    50%     { transform: translateY(-10px); }
+  }
+
+  /* Main grid */
+  .main { display: grid; grid-template-columns: 1fr 380px; gap: 20px; padding: 24px 32px; flex: 1; }
+
+  /* Camera section */
+  .camera-section {
+    display: flex; flex-direction: column; gap: 16px;
+  }
+  .camera-wrap {
+    position: relative;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    overflow: hidden;
+    aspect-ratio: 4/3;
+    min-height: 380px;
+  }
+  .camera-wrap::before {
+    content: '';
+    position: absolute; inset: 0;
+    background: linear-gradient(to bottom, transparent 70%, rgba(8,9,13,0.9));
+    pointer-events: none; z-index: 2;
+  }
+  #videoElement {
+    width: 100%; height: 100%; object-fit: cover;
+    transform: scaleX(-1);
+    display: block;
+  }
+  #outputCanvas {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    transform: scaleX(-1);
+    z-index: 1;
+  }
+
+  /* Corner decorations */
+  .corner { position: absolute; width: 20px; height: 20px; z-index: 3; }
+  .corner-tl { top: 12px; left: 12px; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .corner-tr { top: 12px; right: 12px; border-top: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+  .corner-bl { bottom: 12px; left: 12px; border-bottom: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .corner-br { bottom: 12px; right: 12px; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+
+  /* Scan line */
+  .scan-line {
+    position: absolute; left: 0; right: 0; height: 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+    z-index: 3; opacity: 0;
+    animation: scanMove 3s ease-in-out infinite;
+  }
+  @keyframes scanMove {
+    0%   { top: 10%; opacity: 0; }
+    10%  { opacity: 0.6; }
+    90%  { opacity: 0.6; }
+    100% { top: 90%; opacity: 0; }
+  }
+
+  /* Overlay when no camera */
+  .cam-placeholder {
+    position: absolute; inset: 0; z-index: 4;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 16px;
+    background: var(--panel);
+  }
+  .cam-icon { font-size: 48px; opacity: 0.3; }
+  .cam-placeholder p { color: var(--muted); font-size: 14px; text-align: center; max-width: 260px; line-height: 1.6; }
+
+  /* Start btn */
+  .btn-start {
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    border: none; border-radius: 10px;
+    color: white; font-family: 'Syne', sans-serif;
+    font-size: 14px; font-weight: 700;
+    padding: 12px 28px; cursor: pointer;
+    transition: all 0.2s;
+    display: flex; align-items: center; gap: 8px;
+    letter-spacing: 0.3px;
+  }
+  .btn-start:hover { transform: translateY(-1px); box-shadow: 0 8px 30px rgba(124,58,237,0.4); }
+  .btn-start:active { transform: translateY(0); }
+  .btn-start:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+  /* Detection result bar */
+  .detection-bar {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px 20px;
+    display: flex; align-items: center; gap: 16px;
+  }
+  .detected-letter {
+    font-family: 'Syne', sans-serif;
+    font-size: 52px; font-weight: 800;
+    color: var(--accent);
+    line-height: 1;
+    min-width: 60px;
+    text-align: center;
+    text-shadow: 0 0 30px rgba(0,229,255,0.4);
+    transition: all 0.15s;
+  }
+  .detected-letter.new { animation: letterPop 0.2s ease-out; }
+  @keyframes letterPop {
+    0%  { transform: scale(1.4); }
+    100%{ transform: scale(1); }
+  }
+  .detection-info { flex: 1; }
+  .detection-label { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin-bottom: 6px; }
+  .confidence-bar-wrap { background: var(--bg2); border-radius: 4px; height: 6px; overflow: hidden; margin-top: 8px; }
+  .confidence-bar { height: 100%; border-radius: 4px; background: linear-gradient(90deg, var(--accent2), var(--accent)); transition: width 0.2s; }
+  .confidence-label { font-size: 12px; color: var(--muted); margin-top: 4px; }
+
+  /* Controls */
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; }
+  .btn-sm {
+    background: var(--panel); border: 1px solid var(--border);
+    color: var(--text); border-radius: 8px;
+    padding: 8px 16px; font-size: 13px; cursor: pointer;
+    transition: all 0.2s; font-family: 'DM Sans', sans-serif;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .btn-sm:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-sm.danger:hover { border-color: #ef4444; color: #ef4444; }
+  .btn-sm.success { background: rgba(16,185,129,0.1); border-color: var(--accent3); color: var(--accent3); }
+
+  /* Right panel */
+  .right-panel { display: flex; flex-direction: column; gap: 16px; }
+
+  .panel-card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px;
+  }
+  .panel-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 13px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1px;
+    color: var(--muted); margin-bottom: 14px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .panel-title span { color: var(--accent); }
+
+  /* Word builder */
+  .word-display {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 80px;
+    display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+  }
+  .word-chip {
+    background: linear-gradient(135deg, rgba(0,229,255,0.1), rgba(124,58,237,0.1));
+    border: 1px solid rgba(0,229,255,0.25);
+    color: var(--accent);
+    padding: 4px 10px; border-radius: 6px;
+    font-family: 'Syne', sans-serif; font-size: 18px; font-weight: 700;
+    animation: chipIn 0.2s ease-out;
+  }
+  @keyframes chipIn { from{transform:scale(0.7);opacity:0} to{transform:scale(1);opacity:1} }
+  .space-chip {
+    color: var(--muted); font-size: 11px; padding: 4px 8px;
+    border: 1px dashed var(--border); border-radius: 6px;
+    display: flex; align-items: center;
+  }
+
+  /* Phrase output */
+  .phrase-output {
+    background: var(--bg2);
+    border: 1px solid rgba(16,185,129,0.3);
+    border-radius: 10px;
+    padding: 16px;
+    min-height: 60px;
+    font-size: 18px;
+    font-weight: 500;
+    color: var(--accent3);
+    word-break: break-word;
+    line-height: 1.5;
+  }
+  .phrase-cursor { display: inline-block; width: 2px; height: 1em; background: var(--accent3); margin-left: 2px; animation: blink 1s infinite; vertical-align: text-bottom; }
+  @keyframes blink { 0%,100%{opacity:1}50%{opacity:0} }
+
+  /* Alphabet reference */
+  .alphabet-grid {
+    display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px;
+  }
+  .alpha-cell {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 6px 4px;
+    text-align: center; cursor: default;
+    transition: all 0.15s;
+  }
+  .alpha-cell.active {
+    background: rgba(0,229,255,0.12);
+    border-color: var(--accent);
+    transform: scale(1.08);
+  }
+  .alpha-cell .ltr { font-family: 'Syne', sans-serif; font-size: 14px; font-weight: 700; color: var(--text); }
+  .alpha-cell .hand { font-size: 16px; }
+
+  /* History */
+  .history-list { display: flex; flex-direction: column; gap: 8px; max-height: 160px; overflow-y: auto; }
+  .history-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg2); border-radius: 8px;
+    border: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .history-time { color: var(--muted); font-size: 11px; min-width: 40px; }
+  .history-word { flex: 1; color: var(--text); font-family: 'Syne', sans-serif; font-weight: 600; }
+  .history-conf { color: var(--accent3); font-size: 11px; }
+
+  /* Instructions */
+  .instruction-list { display: flex; flex-direction: column; gap: 10px; }
+  .instruction { display: flex; align-items: flex-start; gap: 10px; }
+  .instr-num {
+    min-width: 24px; height: 24px;
+    background: linear-gradient(135deg, var(--accent2), var(--accent));
+    border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700; font-family: 'Syne', sans-serif;
+    flex-shrink: 0;
+  }
+  .instr-text { font-size: 13px; color: var(--muted); line-height: 1.5; }
+  .instr-text strong { color: var(--text); }
+
+  /* Loading overlay */
+  .loading-overlay {
+    position: absolute; inset: 0; z-index: 5;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    background: rgba(8,9,13,0.9); gap: 16px;
+    display: none;
+  }
+  .spinner {
+    width: 48px; height: 48px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-text { color: var(--muted); font-size: 14px; }
+
+  /* Responsive */
+  @media (max-width: 900px) {
+    .main { grid-template-columns: 1fr; }
+    header { padding: 14px 20px; }
+    .main { padding: 16px 20px; }
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--bg2); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Tooltip */
+  .tip {
+    background: rgba(0,229,255,0.08);
+    border: 1px solid rgba(0,229,255,0.2);
+    border-radius: 8px; padding: 10px 14px;
+    font-size: 12px; color: var(--muted); line-height: 1.6;
+  }
+  .tip strong { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="blob blob1"></div>
+<div class="blob blob2"></div>
+<div class="blob blob3"></div>
+
+<div class="app">
+  <header>
+    <div class="logo">
+      <div class="logo-icon">🤟</div>
+      <div class="logo-text">Sign<span>Bridge</span></div>
+      <div class="badge">PROTOTIPO v1.0</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="status-pill">
+        <div class="status-dot" id="statusDot"></div>
+        <span id="statusText">Listo para iniciar</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="main">
+    <!-- Camera Column -->
+    <div class="camera-section">
+      <div class="camera-wrap" id="cameraWrap">
+        <div class="corner corner-tl"></div>
+        <div class="corner corner-tr"></div>
+        <div class="corner corner-bl"></div>
+        <div class="corner corner-br"></div>
+        <div class="scan-line" id="scanLine"></div>
+
+        <video id="videoElement" playsinline autoplay muted></video>
+        <canvas id="outputCanvas"></canvas>
+
+        <div class="cam-placeholder" id="camPlaceholder">
+          <div style="text-align:center;padding:20px;width:100%">
+            <div style="font-size:64px;margin-bottom:16px;animation:camBounce 1.5s ease-in-out infinite">📷</div>
+            <div style="color:#e8eaf0;font-size:15px;margin-bottom:28px;line-height:1.6;max-width:280px;margin-left:auto;margin-right:auto">
+              Toque el botón para activar la cámara y comenzar a traducir señas
+            </div>
+            <!-- BIG ACTIVATION BUTTON -->
+            <button onclick="startCamera()" style="
+              display:flex;align-items:center;justify-content:center;gap:14px;
+              width:90%;max-width:320px;
+              margin:0 auto 16px auto;
+              padding:22px 20px;
+              background:linear-gradient(135deg,#7c3aed,#00e5ff);
+              border:none;border-radius:20px;
+              color:white;
+              font-family:'Syne',sans-serif;
+              font-size:22px;font-weight:800;
+              cursor:pointer;
+              box-shadow:0 8px 40px rgba(0,229,255,0.45);
+              animation:glowPulse 2s ease-in-out infinite;
+              letter-spacing:0.5px;
+            ">
+              <span style="font-size:32px">🤟</span>
+              ACTIVAR CÁMARA
+            </button>
+            <div style="color:#5a607a;font-size:12px;margin-top:8px">
+              Se pedirá permiso para usar la cámara — toque <strong style="color:#00e5ff">Permitir</strong>
+            </div>
+          </div>
+        </div>
+
+        <div class="loading-overlay" id="loadingOverlay">
+          <div class="spinner"></div>
+          <div class="loading-text" id="loadingText">Cargando MediaPipe...</div>
+        </div>
+      </div>
+
+      <!-- Detection Result -->
+      <div class="detection-bar">
+        <div class="detected-letter" id="detectedLetter">—</div>
+        <div class="detection-info">
+          <div class="detection-label">Seña detectada</div>
+          <div id="detectedName" style="font-size:15px;font-weight:500;margin-top:2px;">Esperando gesto...</div>
+          <div class="confidence-bar-wrap">
+            <div class="confidence-bar" id="confBar" style="width:0%"></div>
+          </div>
+          <div class="confidence-label" id="confLabel">Confianza: —</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div id="holdTimer" style="font-size:11px;color:var(--muted);text-align:center;min-width:60px">
+            Mantener<br>gesto
+          </div>
+        </div>
+      </div>
+
+      <!-- Controls -->
+      <div class="controls">
+        <button class="btn-sm success" onclick="addSpace()">␣ Espacio</button>
+        <button class="btn-sm" onclick="deleteLast()">⌫ Borrar</button>
+        <button class="btn-sm" onclick="clearAll()">🗑 Limpiar</button>
+        <button class="btn-sm" onclick="saveWord()">💾 Guardar palabra</button>
+        <button class="btn-sm danger" onclick="stopCamera()">⏹ Detener</button>
+      </div>
+
+      <!-- Tip -->
+      <div class="tip">
+        💡 <strong>Cómo usar:</strong> Muestre su mano frente a la cámara formando una letra del alfabeto en LSC o ASL.
+        Mantenga el gesto estable <strong>1.5 segundos</strong> para que se agregue automáticamente. Use
+        <strong>Espacio</strong> para separar palabras y forme frases completas.
+      </div>
+    </div>
+
+    <!-- Right Panel -->
+    <div class="right-panel">
+
+      <!-- Word Builder -->
+      <div class="panel-card">
+        <div class="panel-title">✍️ Construcción de <span>palabra</span></div>
+        <div class="word-display" id="wordDisplay">
+          <span style="color:var(--muted);font-size:12px;align-self:center">Las letras detectadas aparecerán aquí...</span>
+        </div>
+      </div>
+
+      <!-- Phrase -->
+      <div class="panel-card">
+        <div class="panel-title">💬 Frase <span>completa</span></div>
+        <div class="phrase-output" id="phraseOutput">
+          <span class="phrase-cursor"></span>
+        </div>
+      </div>
+
+      <!-- Alphabet Reference -->
+      <div class="panel-card">
+        <div class="panel-title">🔤 Referencia <span>alfabeto</span> (ASL/LSC)</div>
+        <div class="alphabet-grid" id="alphabetGrid"></div>
+      </div>
+
+      <!-- History -->
+      <div class="panel-card">
+        <div class="panel-title">📋 Historial de <span>palabras</span></div>
+        <div class="history-list" id="historyList">
+          <div style="color:var(--muted);font-size:12px;text-align:center;padding:12px">
+            Las palabras guardadas aparecerán aquí
+          </div>
+        </div>
+      </div>
+
+      <!-- Instructions -->
+      <div class="panel-card">
+        <div class="panel-title">📖 <span>Instrucciones</span></div>
+        <div class="instruction-list">
+          <div class="instruction">
+            <div class="instr-num">1</div>
+            <div class="instr-text"><strong>Active la cámara</strong> y permita el acceso cuando el navegador lo solicite.</div>
+          </div>
+          <div class="instruction">
+            <div class="instr-num">2</div>
+            <div class="instr-text"><strong>Coloque su mano</strong> frente a la cámara con buena iluminación.</div>
+          </div>
+          <div class="instruction">
+            <div class="instr-num">3</div>
+            <div class="instr-text"><strong>Forme una letra</strong> del alfabeto dactilológico. La IA detectará los puntos de su mano.</div>
+          </div>
+          <div class="instruction">
+            <div class="instr-num">4</div>
+            <div class="instr-text"><strong>Mantenga 1.5 seg</strong> para confirmar y construya palabras letra a letra.</div>
+          </div>
+          <div class="instruction">
+            <div class="instr-num">5</div>
+            <div class="instr-text"><strong>Use Espacio</strong> para separar palabras y forme frases completas.</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Alphabet emoji reference ─────────────────────────────────────────────
+const ALPHA = {
+  A:'👊', B:'🖐', C:'🤏', D:'👆', E:'🤞',
+  F:'👌', G:'👉', H:'✌️', I:'🤙', J:'🤙',
+  K:'✌️', L:'👈', M:'✊', N:'✊', O:'⭕',
+  P:'👇', Q:'👇', R:'🤞', S:'✊', T:'👊',
+  U:'✌️', V:'✌️', W:'🖐', X:'☝️', Y:'🤙', Z:'☝️'
+};
+
+// ── ASL/LSC landmark-based classifier ────────────────────────────────────
+// Uses relative positions of 21 hand landmarks to classify letters.
+// This is a rule-based geometric classifier (no training data required).
+
+function normalizeHand(landmarks) {
+  // Center on wrist (landmark 0), scale by hand size
+  const wrist = landmarks[0];
+  let maxDist = 0;
+  for (const p of landmarks) {
+    const d = Math.hypot(p.x - wrist.x, p.y - wrist.y);
+    if (d > maxDist) maxDist = d;
+  }
+  if (maxDist < 0.001) maxDist = 1;
+  return landmarks.map(p => ({
+    x: (p.x - wrist.x) / maxDist,
+    y: (p.y - wrist.y) / maxDist,
+    z: (p.z - wrist.z) / maxDist
+  }));
+}
+
+function fingerExtended(norm, tip, pip) {
+  // A finger is "extended" if its tip is further from wrist than its PIP joint
+  const tipDist = Math.hypot(norm[tip].x, norm[tip].y);
+  const pipDist = Math.hypot(norm[pip].x, norm[pip].y);
+  return tipDist > pipDist * 0.85;
+}
+
+function fingersBent(norm, tip, pip) {
+  return !fingerExtended(norm, tip, pip);
+}
+
+function thumbExtended(norm) {
+  const thumb = norm[4];
+  const index = norm[5];
+  return Math.hypot(thumb.x - index.x, thumb.y - index.y) > 0.35;
+}
+
+function allFingersExtended(norm) {
+  return fingerExtended(norm, 8, 6) && fingerExtended(norm, 12, 10) &&
+         fingerExtended(norm, 16, 14) && fingerExtended(norm, 20, 18);
+}
+
+function allFingersBent(norm) {
+  return fingersBent(norm, 8, 6) && fingersBent(norm, 12, 10) &&
+         fingersBent(norm, 16, 14) && fingersBent(norm, 20, 18);
+}
+
+function tipsTouching(norm, t1, t2, thresh = 0.25) {
+  return Math.hypot(norm[t1].x - norm[t2].x, norm[t1].y - norm[t2].y) < thresh;
+}
+
+function classifyASL(landmarks) {
+  const n = normalizeHand(landmarks);
+  const ind = fingerExtended(n, 8, 6);
+  const mid = fingerExtended(n, 12, 10);
+  const ring = fingerExtended(n, 16, 14);
+  const pink = fingerExtended(n, 20, 18);
+  const thm = thumbExtended(n);
+
+  // Spread fingers for B / W / 5
+  const spread = Math.hypot(n[4].x - n[20].x, n[4].y - n[20].y);
+  // Thumb-index distance
+  const thiDist = Math.hypot(n[4].x - n[8].x, n[4].y - n[8].y);
+  // Index-mid spread
+  const imSpread = Math.hypot(n[8].x - n[12].x, n[8].y - n[12].y);
+
+  // ── Classification rules ───────────────────────────────────────────────
+  // A — fist, thumb to side
+  if (!ind && !mid && !ring && !pink && thm)
+    return { letter: 'A', conf: 0.82, name: 'A — puño con pulgar lateral' };
+
+  // B — all extended, thumb bent
+  if (ind && mid && ring && pink && !thm && spread > 0.5)
+    return { letter: 'B', conf: 0.80, name: 'B — todos los dedos extendidos' };
+
+  // C — curved, no fingers fully extended
+  if (!ind && !mid && !ring && !pink && !thm && thiDist > 0.2 && thiDist < 0.55)
+    return { letter: 'C', conf: 0.75, name: 'C — mano curva abierta' };
+
+  // D — index up, others curled, thumb touches middle
+  if (ind && !mid && !ring && !pink && !thm)
+    return { letter: 'D', conf: 0.79, name: 'D — índice arriba' };
+
+  // E — all bent inward (claw)
+  if (!ind && !mid && !ring && !pink && !thm && thiDist < 0.2)
+    return { letter: 'E', conf: 0.74, name: 'E — dedos curvados hacia palma' };
+
+  // F — index+thumb circle, others up
+  if (mid && ring && pink && thiDist < 0.22)
+    return { letter: 'F', conf: 0.78, name: 'F — OK con dedos extendidos' };
+
+  // G — index pointing sideways
+  if (ind && !mid && !ring && !pink && thm && Math.abs(n[8].y) < 0.3)
+    return { letter: 'G', conf: 0.72, name: 'G — índice apuntando lateral' };
+
+  // H — index + middle horizontal
+  if (ind && mid && !ring && !pink && !thm && imSpread < 0.18)
+    return { letter: 'H', conf: 0.76, name: 'H — índice y medio horizontales' };
+
+  // I — pinky only up
+  if (!ind && !mid && !ring && pink && !thm)
+    return { letter: 'I', conf: 0.83, name: 'I — meñique extendido' };
+
+  // K — index + middle up, spread
+  if (ind && mid && !ring && !pink && thm && imSpread > 0.2)
+    return { letter: 'K', conf: 0.73, name: 'K — índice y medio extendidos' };
+
+  // L — L-shape: index up, thumb out
+  if (ind && !mid && !ring && !pink && thm && n[8].y < -0.4)
+    return { letter: 'L', conf: 0.85, name: 'L — forma de L' };
+
+  // M — 3 fingers over thumb
+  if (!ind && !mid && !ring && !pink && !thm && n[4].y > -0.1)
+    return { letter: 'M', conf: 0.68, name: 'M — tres dedos sobre pulgar' };
+
+  // O — circle with all fingers
+  if (thiDist < 0.2 && !mid && !ring && !pink)
+    return { letter: 'O', conf: 0.77, name: 'O — círculo con los dedos' };
+
+  // R — crossed index and middle
+  if (ind && mid && !ring && !pink && !thm && imSpread < 0.12)
+    return { letter: 'R', conf: 0.71, name: 'R — índice y medio cruzados' };
+
+  // S — fist, thumb over fingers
+  if (!ind && !mid && !ring && !pink && !thm)
+    return { letter: 'S', conf: 0.78, name: 'S — puño cerrado' };
+
+  // U — index + middle together up
+  if (ind && mid && !ring && !pink && !thm && imSpread < 0.15)
+    return { letter: 'U', conf: 0.75, name: 'U — índice y medio juntos' };
+
+  // V — peace/V sign
+  if (ind && mid && !ring && !pink && !thm && imSpread > 0.2)
+    return { letter: 'V', conf: 0.82, name: 'V — señal de paz' };
+
+  // W — index, middle, ring up
+  if (ind && mid && ring && !pink && !thm)
+    return { letter: 'W', conf: 0.73, name: 'W — tres dedos extendidos' };
+
+  // Y — thumb + pinky out
+  if (!ind && !mid && !ring && pink && thm)
+    return { letter: 'Y', conf: 0.80, name: 'Y — pulgar y meñique' };
+
+  // Open hand = 5 / todos extendidos
+  if (ind && mid && ring && pink && thm)
+    return { letter: '5', conf: 0.70, name: '5 — mano abierta completa' };
+
+  return { letter: '?', conf: 0.3, name: 'No reconocido — ajuste la posición' };
+}
+
+// ── State ─────────────────────────────────────────────────────────────────
+let currentWord = [];
+let phrase = '';
+let history = [];
+let lastLetter = null;
+let holdStart = null;
+const HOLD_TIME = 1500; // ms to confirm letter
+let cameraActive = false;
+let handsModel = null;
+let cameraUtils = null;
+let animFrame = null;
+
+// ── Build alphabet grid ───────────────────────────────────────────────────
+function buildAlphabetGrid() {
+  const grid = document.getElementById('alphabetGrid');
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').forEach(l => {
+    const cell = document.createElement('div');
+    cell.className = 'alpha-cell';
+    cell.id = 'alpha-' + l;
+    cell.innerHTML = `<div class="hand">${ALPHA[l] || '🤟'}</div><div class="ltr">${l}</div>`;
+    grid.appendChild(cell);
+  });
+}
+
+// ── Camera & MediaPipe ─────────────────────────────────────────────────────
+async function startCamera() {
+  const placeholder = document.getElementById('camPlaceholder');
+  const loadingOverlay = document.getElementById('loadingOverlay');
+  const video = document.getElementById('videoElement');
+  const canvas = document.getElementById('outputCanvas');
+
+  placeholder.style.display = 'none';
+  loadingOverlay.style.display = 'flex';
+  setStatus('loading', 'Cargando modelo...');
+
+  try {
+    // Get camera stream
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: 'environment' },
+      audio: false
+    });
+    video.srcObject = stream;
+    await new Promise(res => video.onloadedmetadata = res);
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+
+    document.getElementById('loadingText').textContent = 'Iniciando MediaPipe Hands...';
+
+    // Initialize MediaPipe Hands
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.7,
+      minTrackingConfidence: 0.6
+    });
+    hands.onResults(onHandResults);
+    handsModel = hands;
+
+    // Start processing loop
+    cameraActive = true;
+    loadingOverlay.style.display = 'none';
+    document.getElementById('scanLine').style.opacity = '1';
+    setStatus('active', 'Detección activa');
+
+    processLoop(video, canvas);
+
+  } catch (err) {
+    loadingOverlay.style.display = 'none';
+    placeholder.style.display = 'flex';
+    setStatus('off', 'Error de cámara');
+    alert('No se pudo acceder a la cámara: ' + err.message);
+    console.error(err);
+  }
+}
+
+async function processLoop(video, canvas) {
+  if (!cameraActive) return;
+  if (handsModel && video.readyState >= 2) {
+    await handsModel.send({ image: video });
+  }
+  animFrame = requestAnimationFrame(() => processLoop(video, canvas));
+}
+
+function onHandResults(results) {
+  const canvas = document.getElementById('outputCanvas');
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+    const landmarks = results.multiHandLandmarks[0];
+
+    // Draw connections
+    drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
+      color: 'rgba(0,229,255,0.5)', lineWidth: 2
+    });
+
+    // Draw landmark dots with glow
+    for (const lm of landmarks) {
+      const x = lm.x * canvas.width;
+      const y = lm.y * canvas.height;
+      ctx.beginPath();
+      ctx.arc(x, y, 5, 0, 2 * Math.PI);
+      ctx.fillStyle = 'rgba(0,229,255,0.9)';
+      ctx.shadowBlur = 12;
+      ctx.shadowColor = '#00e5ff';
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // Classify
+    const result = classifyASL(landmarks);
+    updateDetection(result);
+
+  } else {
+    updateDetection(null);
+  }
+}
+
+function updateDetection(result) {
+  const letterEl = document.getElementById('detectedLetter');
+  const nameEl   = document.getElementById('detectedName');
+  const confBar  = document.getElementById('confBar');
+  const confLbl  = document.getElementById('confLabel');
+  const holdEl   = document.getElementById('holdTimer');
+  const now = Date.now();
+
+  if (!result || result.letter === '?') {
+    letterEl.textContent = '—';
+    nameEl.textContent = 'Sin mano detectada';
+    confBar.style.width = '0%';
+    confLbl.textContent = 'Confianza: —';
+    lastLetter = null; holdStart = null;
+    holdEl.innerHTML = 'Mantener<br>gesto';
+    // Clear all active alpha cells
+    document.querySelectorAll('.alpha-cell.active').forEach(c => c.classList.remove('active'));
+    return;
+  }
+
+  const { letter, conf, name } = result;
+  const confPct = Math.round(conf * 100);
+
+  // Update UI
+  if (letterEl.textContent !== letter) {
+    letterEl.textContent = letter;
+    letterEl.classList.remove('new');
+    void letterEl.offsetWidth;
+    letterEl.classList.add('new');
+  }
+  nameEl.textContent = name;
+  confBar.style.width = confPct + '%';
+  confLbl.textContent = `Confianza: ${confPct}%`;
+
+  // Highlight in alphabet grid
+  document.querySelectorAll('.alpha-cell.active').forEach(c => c.classList.remove('active'));
+  const alphaCell = document.getElementById('alpha-' + letter);
+  if (alphaCell) alphaCell.classList.add('active');
+
+  // Hold timer logic
+  if (letter !== lastLetter || letter === '?') {
+    lastLetter = letter;
+    holdStart = now;
+  }
+
+  const elapsed = now - holdStart;
+  const pct = Math.min(100, Math.round((elapsed / HOLD_TIME) * 100));
+  holdEl.innerHTML = `<div style="font-size:10px;color:var(--muted);margin-bottom:4px">Mantener</div>
+    <div style="width:50px;height:4px;background:var(--border);border-radius:2px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:linear-gradient(90deg,var(--accent2),var(--accent));transition:width 0.1s"></div>
+    </div>
+    <div style="font-size:10px;color:${pct>60?'var(--accent)':'var(--muted)'};margin-top:3px">${pct}%</div>`;
+
+  // Auto-add after hold time
+  if (elapsed >= HOLD_TIME && conf > 0.65 && letter !== '?') {
+    addLetter(letter);
+    holdStart = now + HOLD_TIME; // prevent immediate re-add
+  }
+}
+
+// ── Speech synthesis ───────────────────────────────────────────────────────
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = 'es-ES';
+  u.rate = 0.9;
+  u.pitch = 1;
+  window.speechSynthesis.speak(u);
+}
+
+// ── Word / Phrase building ─────────────────────────────────────────────────
+function addLetter(letter) {
+  currentWord.push(letter);
+  renderWord();
+  speak(letter);
+  lastLetter = null;
+  holdStart = null;
+  // Flash the alpha cell
+  const cell = document.getElementById('alpha-' + letter);
+  if (cell) {
+    cell.style.background = 'rgba(0,229,255,0.3)';
+    setTimeout(() => { cell.style.background = ''; }, 300);
+  }
+}
+
+function renderWord() {
+  const display = document.getElementById('wordDisplay');
+  if (currentWord.length === 0) {
+    display.innerHTML = '<span style="color:var(--muted);font-size:12px;align-self:center">Las letras detectadas aparecerán aquí...</span>';
+    return;
+  }
+  display.innerHTML = currentWord.map(l =>
+    `<div class="word-chip">${l}</div>`
+  ).join('');
+}
+
+function addSpace() {
+  if (currentWord.length > 0) {
+    phrase += currentWord.join('') + ' ';
+    currentWord = [];
+    renderWord();
+    renderPhrase();
+    setHistory(currentWord.join('') || '(espacio)');
+  } else {
+    phrase += ' ';
+    renderPhrase();
+  }
+}
+
+function saveWord() {
+  if (currentWord.length === 0) return;
+  const word = currentWord.join('');
+  phrase += word;
+  setHistory(word);
+  speak(word);
+  currentWord = [];
+  renderWord();
+  renderPhrase();
+}
+
+function deleteLast() {
+  if (currentWord.length > 0) {
+    currentWord.pop();
+    renderWord();
+  } else if (phrase.length > 0) {
+    phrase = phrase.slice(0, -1);
+    renderPhrase();
+  }
+}
+
+function clearAll() {
+  currentWord = [];
+  phrase = '';
+  renderWord();
+  renderPhrase();
+}
+
+function renderPhrase() {
+  const out = document.getElementById('phraseOutput');
+  out.innerHTML = (phrase || '') + '<span class="phrase-cursor"></span>';
+}
+
+function setHistory(word) {
+  if (!word || word === '(espacio)') return;
+  const now = new Date();
+  const time = now.getHours() + ':' + String(now.getMinutes()).padStart(2,'0');
+  history.unshift({ word, time });
+  if (history.length > 10) history.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (history.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:12px;text-align:center;padding:12px">Las palabras guardadas aparecerán aquí</div>';
+    return;
+  }
+  list.innerHTML = history.map(h => `
+    <div class="history-item">
+      <div class="history-time">${h.time}</div>
+      <div class="history-word">${h.word}</div>
+      <div class="history-conf">✓</div>
+    </div>
+  `).join('');
+}
+
+// ── Status ────────────────────────────────────────────────────────────────
+function setStatus(state, text) {
+  const dot  = document.getElementById('statusDot');
+  const span = document.getElementById('statusText');
+  dot.className = 'status-dot';
+  if (state === 'active')  dot.classList.add('active');
+  if (state === 'loading') dot.classList.add('loading');
+  span.textContent = text;
+}
+
+function stopCamera() {
+  cameraActive = false;
+  if (animFrame) cancelAnimationFrame(animFrame);
+  const video = document.getElementById('videoElement');
+  if (video.srcObject) {
+    video.srcObject.getTracks().forEach(t => t.stop());
+    video.srcObject = null;
+  }
+  document.getElementById('camPlaceholder').style.display = 'flex';
+  document.getElementById('scanLine').style.opacity = '0';
+  document.getElementById('outputCanvas').getContext('2d')
+    .clearRect(0,0,640,480);
+  setStatus('off', 'Cámara detenida');
+  document.getElementById('detectedLetter').textContent = '—';
+  document.getElementById('detectedName').textContent = 'Esperando gesto...';
+  document.getElementById('confBar').style.width = '0%';
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────
+buildAlphabetGrid();
+renderPhrase();
+renderHistory();
+</script>
+</body>
+</html>
