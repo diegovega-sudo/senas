@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SignBridge v2.0 — Traductor de Señas</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+<style>
+  :root {
+    --bg: #050708;
+    --surface: #0d1117;
+    --card: #161b22;
+    --border: #21262d;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #f78166;
+    --yellow: #e3b341;
+    --purple: #bc8cff;
+    --text: #e6edf3;
+    --muted: #7d8590;
+    --font: 'Space Grotesk', sans-serif;
+    --mono: 'JetBrains Mono', monospace;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Grid background */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(88,166,255,0.03) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(88,166,255,0.03) 1px, transparent 1px);
+    background-size: 40px 40px;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .container {
+    position: relative;
+    z-index: 1;
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 16px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 16px 0 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+
+  .logo {
+    width: 40px;
+    height: 40px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+  }
+
+  .brand { flex: 1; }
+  .brand h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.5px; }
+  .brand h1 span { color: var(--accent); }
+  .brand p { font-size: 11px; color: var(--muted); font-family: var(--mono); }
+
+  .badge {
+    padding: 4px 10px;
+    border-radius: 20px;
+    font-size: 11px;
+    font-family: var(--mono);
+    font-weight: 700;
+    border: 1px solid;
+  }
+  .badge-blue { color: var(--accent); border-color: rgba(88,166,255,0.3); background: rgba(88,166,255,0.1); }
+  .badge-green { color: var(--green); border-color: rgba(63,185,80,0.3); background: rgba(63,185,80,0.1); }
+  .badge-red { color: var(--orange); border-color: rgba(247,129,102,0.3); background: rgba(247,129,102,0.1); }
+
+  /* Layout */
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 700px) { .grid { grid-template-columns: 1fr; } }
+
+  /* Camera panel */
+  .cam-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .cam-wrap {
+    position: relative;
+    width: 100%;
+    padding-bottom: 75%;
+    background: #000;
+  }
+
+  #videoEl, #canvasEl {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    object-fit: cover;
+  }
+
+  #canvasEl { z-index: 2; }
+
+  .cam-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: rgba(5,7,8,0.85);
+    gap: 16px;
+    padding: 20px;
+    text-align: center;
+  }
+
+  .cam-overlay.hidden { display: none; }
+
+  .cam-icon {
+    font-size: 48px;
+    animation: bounce 2s ease-in-out infinite;
+  }
+  @keyframes bounce {
+    0%,100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+
+  .btn-start {
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    color: #fff;
+    border: none;
+    padding: 14px 28px;
+    border-radius: 10px;
+    font-family: var(--font);
+    font-size: 16px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.5px;
+    width: 100%;
+    max-width: 280px;
+    transition: opacity 0.2s, transform 0.2s;
+  }
+  .btn-start:active { transform: scale(0.97); opacity: 0.9; }
+
+  /* Detection overlay */
+  .det-bar {
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    z-index: 4;
+    background: linear-gradient(transparent, rgba(5,7,8,0.95));
+    padding: 20px 12px 12px;
+    display: none;
+  }
+  .det-bar.active { display: block; }
+
+  .det-sign {
+    font-size: 36px;
+    font-weight: 700;
+    font-family: var(--mono);
+    color: var(--accent);
+    text-shadow: 0 0 20px rgba(88,166,255,0.5);
+    line-height: 1;
+  }
+
+  .det-word {
+    font-size: 13px;
+    color: var(--text);
+    margin-top: 2px;
+  }
+
+  .det-lang {
+    font-size: 10px;
+    color: var(--muted);
+    font-family: var(--mono);
+  }
+
+  /* Hold bar */
+  .hold-bar-wrap {
+    margin-top: 8px;
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .hold-bar-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), var(--purple));
+    transition: width 0.05s linear;
+    border-radius: 2px;
+  }
+
+  /* Corner decorations */
+  .corner { position: absolute; width: 16px; height: 16px; z-index: 5; }
+  .corner-tl { top: 8px; left: 8px; border-top: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .corner-tr { top: 8px; right: 8px; border-top: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+  .corner-bl { bottom: 40px; left: 8px; border-bottom: 2px solid var(--accent); border-left: 2px solid var(--accent); }
+  .corner-br { bottom: 40px; right: 8px; border-bottom: 2px solid var(--accent); border-right: 2px solid var(--accent); }
+
+  /* Right panel */
+  .right-col { display: flex; flex-direction: column; gap: 12px; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px;
+  }
+
+  .card-title {
+    font-size: 11px;
+    font-family: var(--mono);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Translation output */
+  .translation-box {
+    min-height: 80px;
+    background: var(--card);
+    border-radius: 8px;
+    padding: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .translation-text {
+    font-size: 22px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: center;
+    word-break: break-word;
+    line-height: 1.3;
+  }
+
+  .translation-empty {
+    font-size: 12px;
+    color: var(--muted);
+    font-family: var(--mono);
+    text-align: center;
+  }
+
+  /* Action buttons */
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  .btn {
+    flex: 1;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--card);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    min-width: 0;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-speak { border-color: rgba(63,185,80,0.4); color: var(--green); }
+  .btn-speak:hover { background: rgba(63,185,80,0.1); }
+  .btn-clear { border-color: rgba(247,129,102,0.4); color: var(--orange); }
+  .btn-clear:hover { background: rgba(247,129,102,0.1); }
+
+  /* Sign dictionary grid */
+  .dict-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
+    gap: 6px;
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .dict-item {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 4px;
+    text-align: center;
+    cursor: default;
+    transition: all 0.15s;
+  }
+  .dict-item:hover { border-color: var(--accent); }
+  .dict-item.active {
+    border-color: var(--accent);
+    background: rgba(88,166,255,0.1);
+    box-shadow: 0 0 10px rgba(88,166,255,0.2);
+  }
+
+  .dict-emoji { font-size: 20px; display: block; }
+  .dict-label { font-size: 9px; color: var(--muted); font-family: var(--mono); margin-top: 2px; display: block; }
+  .dict-word { font-size: 10px; color: var(--text); font-weight: 600; display: block; }
+
+  /* Language filter */
+  .lang-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+  .lang-tab {
+    padding: 4px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .lang-tab.active { border-color: var(--accent); color: var(--accent); background: rgba(88,166,255,0.1); }
+
+  /* History */
+  .history-list { display: flex; flex-direction: column; gap: 6px; max-height: 120px; overflow-y: auto; }
+  .history-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--card);
+    border-radius: 6px;
+    font-size: 12px;
+  }
+  .history-word { flex: 1; font-weight: 600; }
+  .history-lang { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  .history-time { font-family: var(--mono); font-size: 10px; color: var(--muted); }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  /* Status dot */
+  .status-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    animation: none;
+  }
+  .status-dot.live { background: var(--green); animation: pulse-dot 2s infinite; }
+  @keyframes pulse-dot {
+    0%,100% { opacity: 1; }
+    50% { opacity: 0.4; }
+  }
+
+  .confidence-ring {
+    width: 36px; height: 36px;
+    border-radius: 50%;
+    background: conic-gradient(var(--accent) 0%, var(--border) 0%);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-family: var(--mono); color: var(--accent);
+    transition: background 0.1s;
+    flex-shrink: 0;
+  }
+
+  .cam-panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .cam-panel-title { font-size: 12px; font-family: var(--mono); color: var(--muted); display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="logo">🤟</div>
+    <div class="brand">
+      <h1>Sign<span>Bridge</span></h1>
+      <p>v2.0 · LSC + ASL · Palabras completas</p>
+    </div>
+    <span class="badge badge-blue" id="statusBadge">INACTIVO</span>
+  </header>
+
+  <div class="grid">
+
+    <!-- Camera -->
+    <div>
+      <div class="cam-panel">
+        <div class="cam-panel-header">
+          <span class="cam-panel-title">
+            <span class="status-dot" id="statusDot"></span>
+            CÁMARA EN VIVO
+          </span>
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="confidence-ring" id="confRing">0%</div>
+          </div>
+        </div>
+
+        <div class="cam-wrap">
+          <video id="videoEl" autoplay playsinline muted></video>
+          <canvas id="canvasEl"></canvas>
+
+          <!-- Corners -->
+          <div class="corner corner-tl"></div>
+          <div class="corner corner-tr"></div>
+          <div class="corner corner-bl"></div>
+          <div class="corner corner-br"></div>
+
+          <!-- Overlay start -->
+          <div class="cam-overlay" id="camOverlay">
+            <div class="cam-icon">📷</div>
+            <p style="font-size:14px;color:var(--muted);max-width:220px">
+              Muestre su mano frente a la cámara para comenzar a traducir señas
+            </p>
+            <button class="btn-start" onclick="startCamera()">🤟 ACTIVAR CÁMARA</button>
+            <p style="font-size:11px;color:var(--muted)">Se pedirá permiso de cámara</p>
+          </div>
+
+          <!-- Detection bar -->
+          <div class="det-bar" id="detBar">
+            <div style="display:flex;align-items:center;gap:10px">
+              <div>
+                <div class="det-sign" id="detSign">—</div>
+                <div class="det-word" id="detWord">Esperando seña...</div>
+                <div class="det-lang" id="detLang">LSC / ASL</div>
+              </div>
+            </div>
+            <div class="hold-bar-wrap">
+              <div class="hold-bar-fill" id="holdBar"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Translation output -->
+      <div class="card" style="margin-top:12px">
+        <div class="card-title">🔤 Traducción acumulada</div>
+        <div class="translation-box" id="translationBox">
+          <span class="translation-empty" id="translationEmpty">Las señas traducidas aparecerán aquí</span>
+          <span class="translation-text" id="translationText" style="display:none"></span>
+        </div>
+        <div class="btn-row" style="margin-top:10px">
+          <button class="btn btn-speak" onclick="speakTranslation()">🔊 Escuchar</button>
+          <button class="btn" onclick="addSpace()">␣ Espacio</button>
+          <button class="btn btn-clear" onclick="clearTranslation()">✕ Limpiar</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right panel -->
+    <div class="right-col">
+
+      <!-- Signs dictionary -->
+      <div class="card">
+        <div class="card-title">📖 Diccionario de señas</div>
+        <div class="lang-tabs">
+          <button class="lang-tab active" onclick="filterLang('all',this)">TODOS</button>
+          <button class="lang-tab" onclick="filterLang('lsc',this)">LSC 🇨🇴</button>
+          <button class="lang-tab" onclick="filterLang('asl',this)">ASL 🇺🇸</button>
+        </div>
+        <div class="dict-grid" id="dictGrid"></div>
+      </div>
+
+      <!-- History -->
+      <div class="card">
+        <div class="card-title">📋 Historial</div>
+        <div class="history-list" id="historyList">
+          <div style="color:var(--muted);font-size:11px;font-family:var(--mono);text-align:center;padding:8px">
+            Sin historial aún
+          </div>
+        </div>
+      </div>
+
+      <!-- Tips -->
+      <div class="card">
+        <div class="card-title">💡 Consejos de uso</div>
+        <div style="display:flex;flex-direction:column;gap:8px">
+          <div style="font-size:12px;color:var(--muted);display:flex;gap:8px">
+            <span style="color:var(--accent)">01</span>
+            <span>Mantenga la seña <strong style="color:var(--text)">2 segundos</strong> para confirmar</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);display:flex;gap:8px">
+            <span style="color:var(--accent)">02</span>
+            <span>Buena iluminación mejora el reconocimiento</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);display:flex;gap:8px">
+            <span style="color:var(--accent)">03</span>
+            <span>Consulte el diccionario para ver las señas disponibles</span>
+          </div>
+          <div style="font-size:12px;color:var(--muted);display:flex;gap:8px">
+            <span style="color:var(--accent)">04</span>
+            <span>Use <strong style="color:var(--text)">Espacio</strong> para separar palabras</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<script>
+// ── Sign dictionary ────────────────────────────────────────────────────────
+// Each sign has: id, emoji, label (display name), word (spoken/shown), lang, gesture classifier
+const SIGNS = [
+  // Saludos / Greetings
+  { id:'hola', emoji:'👋', label:'Hola', word:'Hola', lang:'both', category:'saludos' },
+  { id:'adios', emoji:'🙋', label:'Adiós', word:'Adiós', lang:'both', category:'saludos' },
+  { id:'gracias', emoji:'🙏', label:'Gracias', word:'Gracias', lang:'both', category:'saludos' },
+  { id:'porfa', emoji:'🤲', label:'Por favor', word:'Por favor', lang:'lsc', category:'saludos' },
+  { id:'please', emoji:'🤲', label:'Please', word:'Please', lang:'asl', category:'saludos' },
+  { id:'si', emoji:'👍', label:'Sí', word:'Sí', lang:'both', category:'saludos' },
+  { id:'no', emoji:'👎', label:'No', word:'No', lang:'both', category:'saludos' },
+  { id:'bien', emoji:'🤙', label:'Bien', word:'Bien', lang:'lsc', category:'saludos' },
+  { id:'love', emoji:'❤️', label:'Te amo', word:'Te amo', lang:'both', category:'saludos' },
+  { id:'help', emoji:'🆘', label:'Ayuda', word:'Ayuda', lang:'both', category:'saludos' },
+
+  // Números / Numbers
+  { id:'uno', emoji:'1️⃣', label:'Uno', word:'Uno', lang:'both', category:'numeros' },
+  { id:'dos', emoji:'2️⃣', label:'Dos', word:'Dos', lang:'both', category:'numeros' },
+  { id:'tres', emoji:'3️⃣', label:'Tres', word:'Tres', lang:'both', category:'numeros' },
+  { id:'cuatro', emoji:'4️⃣', label:'Cuatro', word:'Cuatro', lang:'both', category:'numeros' },
+  { id:'cinco', emoji:'5️⃣', label:'Cinco', word:'Cinco', lang:'both', category:'numeros' },
+  { id:'seis', emoji:'6️⃣', label:'Seis', word:'Seis', lang:'both', category:'numeros' },
+  { id:'siete', emoji:'7️⃣', label:'Siete', word:'Siete', lang:'both', category:'numeros' },
+  { id:'ocho', emoji:'8️⃣', label:'Ocho', word:'Ocho', lang:'both', category:'numeros' },
+  { id:'nueve', emoji:'9️⃣', label:'Nueve', word:'Nueve', lang:'both', category:'numeros' },
+  { id:'diez', emoji:'🔟', label:'Diez', word:'Diez', lang:'both', category:'numeros' },
+
+  // Colores / Colors
+  { id:'rojo', emoji:'🔴', label:'Rojo', word:'Rojo', lang:'lsc', category:'colores' },
+  { id:'azul', emoji:'🔵', label:'Azul', word:'Azul', lang:'lsc', category:'colores' },
+  { id:'verde', emoji:'🟢', label:'Verde', word:'Verde', lang:'lsc', category:'colores' },
+  { id:'amarillo', emoji:'🟡', label:'Amarillo', word:'Amarillo', lang:'lsc', category:'colores' },
+  { id:'negro', emoji:'⚫', label:'Negro', word:'Negro', lang:'lsc', category:'colores' },
+  { id:'blanco', emoji:'⚪', label:'Blanco', word:'Blanco', lang:'lsc', category:'colores' },
+  { id:'red', emoji:'🔴', label:'Red', word:'Red', lang:'asl', category:'colores' },
+  { id:'blue', emoji:'🔵', label:'Blue', word:'Blue', lang:'asl', category:'colores' },
+  { id:'green', emoji:'🟢', label:'Green', word:'Green', lang:'asl', category:'colores' },
+
+  // Familia / Family
+  { id:'mama', emoji:'👩', label:'Mamá', word:'Mamá', lang:'lsc', category:'familia' },
+  { id:'papa', emoji:'👨', label:'Papá', word:'Papá', lang:'lsc', category:'familia' },
+  { id:'hermano', emoji:'👦', label:'Hermano', word:'Hermano', lang:'lsc', category:'familia' },
+  { id:'hermana', emoji:'👧', label:'Hermana', word:'Hermana', lang:'lsc', category:'familia' },
+
+  // Emociones / Emotions
+  { id:'feliz', emoji:'😊', label:'Feliz', word:'Feliz', lang:'lsc', category:'emociones' },
+  { id:'triste', emoji:'😢', label:'Triste', word:'Triste', lang:'lsc', category:'emociones' },
+  { id:'happy', emoji:'😊', label:'Happy', word:'Happy', lang:'asl', category:'emociones' },
+  { id:'sad', emoji:'😢', label:'Sad', word:'Sad', lang:'asl', category:'emociones' },
+  { id:'angry', emoji:'😠', label:'Enojado', word:'Enojado', lang:'both', category:'emociones' },
+];
+
+// Gesture recognition map: maps hand geometry pattern → sign id
+// This uses MediaPipe hand landmarks to classify gestures
+const GESTURE_RULES = {
+  // Numbers (finger count based)
+  'fist':       'hola',   // closed fist + wave = hola
+  'one':        'uno',
+  'two':        'dos',
+  'three':      'tres',
+  'four':       'cuatro',
+  'five':       'cinco',
+  'thumbsup':   'si',
+  'thumbsdown': 'no',
+  'ok':         'bien',
+  'love_you':   'love',
+  'call_me':    'bien',
+  'open':       'adios',
+  'point_up':   'uno',
+};
+
+let currentLang = 'all';
+let translationWords = [];
+let history = [];
+let hands = null;
+let camera = null;
+let holdStart = null;
+let lastGesture = null;
+const HOLD_TIME = 2000; // 2 seconds
+
+// ── Render dictionary ──────────────────────────────────────────────────────
+function renderDict(lang) {
+  const grid = document.getElementById('dictGrid');
+  const filtered = SIGNS.filter(s => lang === 'all' || s.lang === lang || s.lang === 'both');
+  grid.innerHTML = filtered.map(s => `
+    <div class="dict-item" id="dict-${s.id}">
+      <span class="dict-emoji">${s.emoji}</span>
+      <span class="dict-word">${s.label}</span>
+      <span class="dict-label">${s.lang === 'both' ? 'LSC+ASL' : s.lang.toUpperCase()}</span>
+    </div>
+  `).join('');
+}
+
+function filterLang(lang, btn) {
+  currentLang = lang;
+  document.querySelectorAll('.lang-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  renderDict(lang);
+}
+
+renderDict('all');
+
+// ── Camera & MediaPipe ─────────────────────────────────────────────────────
+async function startCamera() {
+  const overlay = document.getElementById('camOverlay');
+  const detBar = document.getElementById('detBar');
+  const dot = document.getElementById('statusDot');
+  const badge = document.getElementById('statusBadge');
+
+  try {
+    overlay.innerHTML = '<div class="cam-icon">⏳</div><p style="color:var(--muted);font-size:13px">Iniciando cámara...</p>';
+
+    const video = document.getElementById('videoEl');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: { ideal: 640 }, height: { ideal: 480 }, facingMode: { ideal: 'environment' } }
+    });
+    video.srcObject = stream;
+    await video.play();
+
+    overlay.classList.add('hidden');
+    detBar.classList.add('active');
+    dot.classList.add('live');
+    badge.textContent = 'EN VIVO';
+    badge.className = 'badge badge-green';
+
+    initMediaPipe(video);
+  } catch (e) {
+    overlay.innerHTML = `
+      <div class="cam-icon">❌</div>
+      <p style="color:var(--orange);font-size:13px">Error: ${e.message}</p>
+      <button class="btn-start" onclick="startCamera()">Reintentar</button>
+    `;
+    badge.textContent = 'ERROR';
+    badge.className = 'badge badge-red';
+  }
+}
+
+function initMediaPipe(video) {
+  const canvas = document.getElementById('canvasEl');
+  const ctx = canvas.getContext('2d');
+
+  hands = new Hands({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}` });
+  hands.setOptions({
+    maxNumHands: 1,
+    modelComplexity: 1,
+    minDetectionConfidence: 0.7,
+    minTrackingConfidence: 0.5
+  });
+
+  hands.onResults(results => {
+    canvas.width = video.videoWidth || 640;
+    canvas.height = video.videoHeight || 480;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+      const landmarks = results.multiHandLandmarks[0];
+      drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: 'rgba(88,166,255,0.4)', lineWidth: 2 });
+      drawLandmarks(ctx, landmarks, { color: '#58a6ff', lineWidth: 1, radius: 3 });
+
+      const gesture = classifyGesture(landmarks);
+      updateDetection(gesture);
+    } else {
+      updateDetection(null);
+    }
+  });
+
+  camera = new Camera(video, {
+    onFrame: async () => { await hands.send({ image: video }); },
+    width: 640, height: 480
+  });
+  camera.start();
+}
+
+// ── Gesture classifier ─────────────────────────────────────────────────────
+function classifyGesture(lm) {
+  const fingers = getFingerStates(lm);
+  const [thumb, index, middle, ring, pinky] = fingers;
+  const extended = fingers.filter(Boolean).length;
+
+  // Numbers
+  if (!thumb && !index && !middle && !ring && !pinky) return { id:'hola', conf:0.75 };
+  if (!thumb && index && !middle && !ring && !pinky) return { id:'uno', conf:0.85 };
+  if (!thumb && index && middle && !ring && !pinky) return { id:'dos', conf:0.82 };
+  if (!thumb && index && middle && ring && !pinky) return { id:'tres', conf:0.80 };
+  if (!thumb && index && middle && ring && pinky) return { id:'cuatro', conf:0.80 };
+  if (thumb && index && middle && ring && pinky) return { id:'cinco', conf:0.85 };
+
+  // Common signs
+  if (thumb && !index && !middle && !ring && !pinky) return { id:'si', conf:0.78 };
+  if (isThumbDown(lm)) return { id:'no', conf:0.75 };
+  if (isOkSign(lm)) return { id:'bien', conf:0.73 };
+  if (thumb && !index && !middle && !ring && pinky) return { id:'love', conf:0.80 };
+  if (thumb && index && !middle && !ring && pinky) return { id:'adios', conf:0.72 };
+  if (!thumb && !index && !middle && !ring && pinky) return { id:'help', conf:0.70 };
+
+  // Greetings based on open hand
+  if (extended >= 4) return { id:'gracias', conf:0.68 };
+
+  return null;
+}
+
+function getFingerStates(lm) {
+  // Returns [thumb, index, middle, ring, pinky] extended states
+  const tips = [4, 8, 12, 16, 20];
+  const pips = [3, 6, 10, 14, 18];
+
+  // Thumb: compare x position
+  const thumbExtended = Math.abs(lm[4].x - lm[2].x) > 0.05;
+
+  const fingers = [thumbExtended];
+  for (let i = 1; i < 5; i++) {
+    fingers.push(lm[tips[i]].y < lm[pips[i]].y);
+  }
+  return fingers;
+}
+
+function isThumbDown(lm) {
+  return lm[4].y > lm[3].y && lm[4].y > lm[2].y &&
+         lm[8].y > lm[6].y && lm[12].y > lm[10].y;
+}
+
+function isOkSign(lm) {
+  const thumbTip = lm[4];
+  const indexTip = lm[8];
+  const dist = Math.hypot(thumbTip.x - indexTip.x, thumbTip.y - indexTip.y);
+  return dist < 0.06 && lm[12].y < lm[10].y;
+}
+
+// ── Detection UI ───────────────────────────────────────────────────────────
+let holdTimer = null;
+let holdPct = 0;
+
+function updateDetection(gesture) {
+  const signEl = document.getElementById('detSign');
+  const wordEl = document.getElementById('detWord');
+  const langEl = document.getElementById('detLang');
+  const holdBar = document.getElementById('holdBar');
+  const confRing = document.getElementById('confRing');
+
+  if (!gesture) {
+    signEl.textContent = '—';
+    wordEl.textContent = 'Esperando seña...';
+    langEl.textContent = 'LSC / ASL';
+    holdBar.style.width = '0%';
+    confRing.textContent = '0%';
+    confRing.style.background = `conic-gradient(var(--accent) 0%, var(--border) 0%)`;
+    lastGesture = null;
+    holdStart = null;
+    holdPct = 0;
+    return;
+  }
+
+  const sign = SIGNS.find(s => s.id === gesture.id);
+  if (!sign) return;
+
+  const pct = Math.round(gesture.conf * 100);
+  confRing.textContent = pct + '%';
+  confRing.style.background = `conic-gradient(var(--accent) ${pct}%, var(--border) ${pct}%)`;
+
+  signEl.textContent = sign.emoji;
+  wordEl.textContent = sign.word;
+  langEl.textContent = sign.lang === 'both' ? 'LSC + ASL' : sign.lang.toUpperCase() + (sign.lang === 'lsc' ? ' 🇨🇴' : ' 🇺🇸');
+
+  // Highlight in dictionary
+  document.querySelectorAll('.dict-item').forEach(el => el.classList.remove('active'));
+  const dictEl = document.getElementById('dict-' + sign.id);
+  if (dictEl) dictEl.classList.add('active');
+
+  // Hold to confirm
+  if (lastGesture !== gesture.id) {
+    lastGesture = gesture.id;
+    holdStart = Date.now();
+    holdPct = 0;
+  } else {
+    const elapsed = Date.now() - holdStart;
+    holdPct = Math.min(100, (elapsed / HOLD_TIME) * 100);
+    holdBar.style.width = holdPct + '%';
+
+    if (holdPct >= 100) {
+      confirmSign(sign);
+      holdStart = Date.now() + HOLD_TIME; // prevent immediate re-add
+    }
+  }
+}
+
+function confirmSign(sign) {
+  translationWords.push(sign.word);
+  updateTranslation();
+  speak(sign.word);
+  addToHistory(sign);
+
+  // Flash dict item
+  const dictEl = document.getElementById('dict-' + sign.id);
+  if (dictEl) {
+    dictEl.style.borderColor = 'var(--green)';
+    dictEl.style.background = 'rgba(63,185,80,0.15)';
+    setTimeout(() => {
+      dictEl.style.borderColor = '';
+      dictEl.style.background = '';
+    }, 500);
+  }
+}
+
+// ── Translation ────────────────────────────────────────────────────────────
+function updateTranslation() {
+  const empty = document.getElementById('translationEmpty');
+  const text = document.getElementById('translationText');
+  const str = translationWords.join(' ');
+  if (str) {
+    empty.style.display = 'none';
+    text.style.display = 'block';
+    text.textContent = str;
+  } else {
+    empty.style.display = 'block';
+    text.style.display = 'none';
+  }
+}
+
+function addSpace() {
+  translationWords.push('·');
+  updateTranslation();
+}
+
+function clearTranslation() {
+  translationWords = [];
+  updateTranslation();
+}
+
+function speakTranslation() {
+  const str = translationWords.filter(w => w !== '·').join(' ');
+  if (str) speak(str);
+}
+
+// ── History ────────────────────────────────────────────────────────────────
+function addToHistory(sign) {
+  const now = new Date();
+  const time = now.getHours() + ':' + String(now.getMinutes()).padStart(2,'0');
+  history.unshift({ word: sign.word, lang: sign.lang, time });
+  if (history.length > 20) history.pop();
+  renderHistory();
+}
+
+function renderHistory() {
+  const list = document.getElementById('historyList');
+  if (history.length === 0) {
+    list.innerHTML = '<div style="color:var(--muted);font-size:11px;font-family:var(--mono);text-align:center;padding:8px">Sin historial aún</div>';
+    return;
+  }
+  list.innerHTML = history.map(h => `
+    <div class="history-item">
+      <span class="history-word">${h.word}</span>
+      <span class="history-lang">${h.lang === 'both' ? 'LSC+ASL' : h.lang.toUpperCase()}</span>
+      <span class="history-time">${h.time}</span>
+    </div>
+  `).join('');
+}
+
+// ── Speech ─────────────────────────────────────────────────────────────────
+function speak(text) {
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  // Use Spanish for LSC words, English for ASL-only
+  u.lang = 'es-CO';
+  u.rate = 0.85;
+  u.pitch = 1;
+  window.speechSynthesis.speak(u);
+}
+</script>
+</body>
+</html>
